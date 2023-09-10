@@ -1,0 +1,61 @@
+import os
+import numpy as np
+import pandas as pd
+import librosa
+import librosa.feature
+from sklearn.preprocessing import LabelEncoder
+from keras.utils import to_categorical
+from sklearn.preprocessing import MinMaxScaler
+
+def extract_features(audio):
+    target_sr = 22050
+    factor = 0.4
+    audio_white_noise = audio + 0.009 * np.random.normal(0, 1, len(audio))
+    audio_roll = np.roll(audio, int(target_sr / 10))
+    audio_time_stch = librosa.effects.time_stretch(audio, rate=factor)
+    audio_pitch_sf = librosa.effects.pitch_shift(audio, sr=target_sr, n_steps=-5)
+
+    mfccs = librosa.feature.mfcc(y=audio, sr=target_sr, n_mfcc=40)
+    mfccs_scaled = np.mean(mfccs.T, axis=0)
+    mfccs_white_noise = librosa.feature.mfcc(y=audio_white_noise, sr=target_sr, n_mfcc=40)
+    mfccs_wn_scaled = np.mean(mfccs_white_noise.T, axis=0)
+    mfccs_roll = librosa.feature.mfcc(y=audio_roll, sr=target_sr, n_mfcc=40)
+    mfccs_r_scaled = np.mean(mfccs_roll.T, axis=0)
+    mfccs_ts = librosa.feature.mfcc(y=audio_time_stch, sr=target_sr, n_mfcc=40)
+    mfccs_ts_scaled = np.mean(mfccs_ts.T, axis=0)
+    mfccs_ps = librosa.feature.mfcc(y=audio_pitch_sf, sr=target_sr, n_mfcc=40)
+    mfccs_ps_scaled = np.mean(mfccs_ps.T, axis=0)
+
+    return np.hstack((mfccs_scaled, mfccs_wn_scaled, mfccs_r_scaled, mfccs_ts_scaled, mfccs_ps_scaled))
+
+data_path = r"G:\My Drive\EDI\archive"
+metadata_path = r"G:\My Drive\EDI\archive\UrbanSound8K.csv"
+
+metadata = pd.read_csv(metadata_path)
+features = []
+labels = []
+
+for index, row in metadata.iterrows():
+    file_path = os.path.join(data_path, f"fold{row['fold']}", f"{row['slice_file_name']}")
+    audio, _ = librosa.load(file_path, sr=22050)
+
+    # Divide audio into 40 equal parts
+    segment_length = len(audio) // 40
+    segments = [audio[i:i+segment_length] for i in range(0, len(audio), segment_length)]
+
+    for segment in segments:
+        extracted_features = extract_features(segment)
+        features.append(extracted_features)
+        labels.append(row['class'])
+
+# Convert labels to one-hot encoding
+label_encoder = LabelEncoder()
+labels_encoded = label_encoder.fit_transform(labels)
+labels_onehot = to_categorical(labels_encoded)
+
+# Concatenate the extracted features and labels into a single 2D array
+features_array = np.array(features)
+data = np.hstack((features_array, labels_onehot))
+
+# Save the data as a CSV file
+pd.DataFrame(data).to_csv("extracted_features_final.csv", header=False, index=False)
