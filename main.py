@@ -126,39 +126,70 @@ def custom_loss(y_true, y_pred):
     cross_entropy_loss = losses.categorical_crossentropy(y_true, y_pred)
     return cross_entropy_loss
 
-
-#
-data_path = "D:/Advay/SY BTech/EDI3/archive"
-metadata_path = "D:/Advay/SY BTech/EDI3/archive/UrbanSound8K.csv"
-# load_data(data_path, metadata_path)
-# pd.DataFrame({'features': features, 'labels': labels}).to_csv('2DFeaturesDummy.csv')
-# df = pd.read_csv('2DFeaturesDummy.csv')
 features = np.load('Test3DArray1.npy', allow_pickle=True)
-print(np.shape(features))
 labels = np.load('TestLabelsArray.npy', allow_pickle=True)
-print(labels)
-print(np.shape(labels))
+print('Data Loaded')
+
+X_train, X_test, y_train, y_test = train_test_split(features, labels_onehot, test_size=0.1, random_state=42, stratify=labels_onehot)
+num_rows, num_columns, num_channels = 40, 40, 1
+x_train = x_train.reshape(x_train.shape[0], num_rows, num_columns, num_channels)
+x_test = x_test.reshape(x_test.shape[0], num_rows, num_columns, num_channels)
+
+num_labels = labels.shape[1]
+filter_size = 2
+
+# Construct model
+from keras.layers import Conv2D, MaxPooling2D, GlobalAveragePooling2D
+
+model = Sequential()
+model.add(Conv2D(filters=16, kernel_size=2, input_shape=(num_rows, num_columns, num_channels), activation='relu'))
+model.add(MaxPooling2D(pool_size=2))
+model.add(Dropout(0.2))
+
+model.add(Conv2D(filters=32, kernel_size=2, activation='relu'))
+model.add(MaxPooling2D(pool_size=2))
+model.add(Dropout(0.2))
+
+model.add(Conv2D(filters=64, kernel_size=2, activation='relu'))
+model.add(MaxPooling2D(pool_size=2))
+model.add(Dropout(0.2))
+
+model.add(Conv2D(filters=128, kernel_size=2, activation='relu'))
+model.add(MaxPooling2D(pool_size=2))
+model.add(Dropout(0.2))
+model.add(GlobalAveragePooling2D())
+
+model.add(Dense(num_labels, activation='softmax'))
+model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+score = model.evaluate(x_test, y_test, verbose=1)
+accuracy = 100*score[1]
+
+print("Pre-training accuracy: %.4f%%" % accuracy)
+from keras.callbacks import ModelCheckpoint
+from datetime import datetime
+
+num_epochs = 72
+num_batch_size = 256
+
+checkpointer = ModelCheckpoint(filepath='Best2DCNN.hdf5',
+                               verbose=1, save_best_only=True)
+start = datetime.now()
+
+model.fit(x_train, y_train, batch_size=num_batch_size, epochs=num_epochs, validation_data=(x_test, y_test),
+          callbacks=[checkpointer], verbose=1)
 
 
-# labels_onehot = to_categorical(labels_encoded)
-# conc_arr = np.concatenate((features, labels_onehot), axis=1)
-#
+duration = datetime.now() - start
+print("Training completed in time: ", duration)
 
-# pd.DataFrame(conc_arr).to_csv("RawAudioData.csv")
-# dataset = pd.read_csv("Augmented_data2.csv")
-# features = np.array(dataset.iloc[:, :41])
-# labels_onehot = np.array(dataset.iloc[:, 41:])
-# class_count = np.argmax(labels_onehot, axis=1)
-# print(class_count)
-# for i in range(10):
-#     print(f"Count of class{i+1}: {np.shape(np.where(class_count==i))}")
+# Evaluating the model on the training and testing set
+score = model.evaluate(x_train, y_train, verbose=0)
+print("Training Accuracy: ", score[1])
 
+score = model.evaluate(x_test, y_test, verbose=0)
+print("Testing Accuracy: ", score[1])
 
-# feature scaling
-# scaler = MinMaxScaler()
-# features = scaler.fit_transform(features)
-# X_train, X_test, y_train, y_test = train_test_split(features, labels_onehot, test_size=0.1, random_state=42, stratify=labels_onehot)
-#
+#-------------------------Ignore the part below--------------------------
 
 
 # Outlier detection and removal
@@ -260,3 +291,4 @@ print(np.shape(labels))
 #     print(
 #         f"Epoch {epoch + 1}/{num_epochs}, Training Loss: {train_loss}, Training accuracy: {train_accuracy}"
 #         f" Validation Loss: {val_loss}, Validation accuracy: {val_accuracy}")
+
