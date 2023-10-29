@@ -1,3 +1,4 @@
+#Input audio in numerical format (Atharva)
 import pyaudio
 
 import argparse
