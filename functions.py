@@ -1,14 +1,18 @@
 import os
-import pyaudio
-import keras.src.saving.legacy.hdf5_format
-import numpy as np
-import pandas as pd
+from collections import deque
+from datetime import datetime
+from random import randint
 import librosa
 import librosa.feature
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+import numpy as np
+import pandas as pd
+import pyaudio
+import tensorflow as tf
+import tensorflow_hub as hub
 from keras.utils import to_categorical
-from random import randint
-
+from scipy.signal import wiener
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import LabelEncoder
 
 label_names = ['air_conditioner', 'car_horn', 'children_playing', 'dog_bark', 'drilling', 'engine_idling', 'gun_shot',
                'jackhammer',
@@ -17,6 +21,31 @@ label_names = ['air_conditioner', 'car_horn', 'children_playing', 'dog_bark', 'd
 classification = np.array([0, 1, 0, 0, 1, 0, 1, 1, 1, 1])
 le = LabelEncoder()
 labels_encoded = np.reshape(le.fit_transform(label_names), [len(label_names), 1])
+noisy_sounds = [
+    # Add noisy classes here
+    'Drill', 'Jackhammer', 'Sawing', 'Power tool', 'Engine', 'Heavy engine (low frequency)', 'Engine knocking',
+    'Idling', 'Accelerating, revving, vroom', 'Vehicle horn, car horn, honking', 'Skidding', 'Tire squeal',
+    'Car passing by', 'Race car, auto racing', 'Truck', 'Air brake', 'Air horn, truck horn', 'Reversing beeps',
+    'Ice cream truck, ice cream van', 'Bus', 'Emergency vehicle', 'Police car (siren)', 'Ambulance (siren)',
+    'Fire engine, fire truck (siren)', 'Motorcycle', 'Traffic noise, roadway noise', 'Train whistle', 'Train horn',
+    'Aircraft engine', 'Jet engine', 'Propeller, airscrew', 'Helicopter', 'Fixed-wing aircraft, airplane',
+    'Bicycle bell', 'Motorboat, speedboat', 'Ship', 'Lawn mower', 'Chainsaw', 'Dental drill, dentist\'s drill',
+    'Power tool', 'Jackhammer', 'Sawing', 'Chopping (food)', 'Frying (food)', 'Microwave oven', 'Blender',
+    'Water tap, faucet', 'Sink (filling or washing)', 'Bathtub (filling or washing)', 'Hair dryer', 'Toilet flush',
+    'Vacuum cleaner', 'Keys jangling', 'Coin (dropping)', 'Scissors', 'Electric shaver, electric razor', 'Typewriter',
+    'Computer keyboard', 'Writing', 'Alarm clock', 'Siren', 'Civil defense siren', 'Buzzer',
+    'Smoke detector, smoke alarm',
+    'Fire alarm', 'Foghorn', 'Whistle', 'Steam whistle', 'Mechanisms', 'Ratchet, pawl', 'Clock', 'Gears', 'Pulleys',
+    'Sewing machine', 'Mechanical fan', 'Air conditioning', 'Cash register', 'Printer', 'Camera', 'Hammer',
+    'Power tool', 'Drill', 'Explosion', 'Gunshot, gunfire', 'Machine gun', 'Fusillade', 'Artillery fire', 'Cap gun',
+    'Fireworks', 'Firecracker', 'Burst, pop', 'Eruption', 'Boom', 'Wood', 'Chop', 'Splinter', 'Crack', 'Glass',
+    'Chink, clink', 'Shatter', 'Splash, splatter', 'Slosh', 'Squish', 'Drip', 'Pour', 'Trickle, dribble', 'Gush',
+    'Fill (with liquid)', 'Spray', 'Pump (liquid)', 'Stir', 'Boiling', 'Arrow', 'Whoosh, swoosh, swish', 'Thump, thud',
+    'Thunk', 'Basketball bounce', 'Bang', 'Slap, smack', 'Whack, thwack', 'Smash, crash', 'Breaking', 'Bouncing',
+    'Whip', 'Flap', 'Scratch', 'Scrape', 'Rub', 'Roll', 'Crushing', 'Crumpling, crinkling', 'Tearing', 'Beep, bleep',
+    'Ping', 'Ding', 'Clang', 'Squeal', 'Creak', 'Rustle', 'Whir', 'Clatter', 'Sizzle', 'Clicking', 'Clickety-clack',
+    'Rumble', 'Plop', 'Jingle, tinkle', 'Hum', 'Zing', 'Boing', 'Crunch']
+
 
 def load_data(data_path, metadata_path):
     features = np.empty((0, 40, 40))
@@ -26,23 +55,32 @@ def load_data(data_path, metadata_path):
 
     metadata = pd.read_csv(metadata_path)
     count = 0
+    # audio = pyaudio.PyAudio()
+    # stream_out = audio.open(format=pyaudio.paFloat32,
+    #                         channels=1,
+    #                         rate=22050,
+    #                         output=True,
+    #                         frames_per_buffer=1024)
     for index, row in metadata.iterrows():
         count += 1
         file_path = os.path.join(data_path, f"fold{row['fold']}", f"{row['slice_file_name']}")
 
         # Load the audio file and resample it
 
-        target_sr = 22050
+        target_sr = 16000
         factor = 0.4
-        audio, sample_rate = librosa.load(file_path, sr=target_sr)
-        print(np.mean(audio))
-        # print(audio.shape)
+        audio, sample_rate = librosa.load(file_path, sr=target_sr, dtype=np.float32)
+        # print("Mean: ", np.mean(audio))
+        # print("Standard deviation: ", np.std(audio))
+
+        # stream_out.write(audio.tobytes())
+        print(audio.shape)
 
         audio_white_noise = audio + 0.009 * np.random.normal(0, 1, len(audio))
         audio_roll = np.roll(audio, int(target_sr / 10))
         audio_time_stch = librosa.effects.time_stretch(audio, rate=factor)
         audio_pitch_sf = librosa.effects.pitch_shift(audio, sr=target_sr, n_steps=-5)
-
+        #
         segment_length = int(len(audio) / 40)
         segments = [audio[i:i + segment_length] for i in range(0, len(audio), segment_length)]
         # Extract MFCC features
@@ -63,11 +101,14 @@ def load_data(data_path, metadata_path):
             if mfccs_2d.shape[0] < 40:
                 mfccs_2d = np.append(mfccs_2d, mfccs_scaled, axis=0)
             # print(mfccs_scaled, np.mean(mfccs_scaled))
-            if temp_means.shape[0] < 40:
-                temp_means = np.append(temp_means, np.mean(mfccs_scaled))
-
-
-
+        #     if temp_means.shape[0] < 40:
+        #         temp_means = np.append(temp_means, np.mean(mfccs_scaled))
+        # # print(temp_means)
+        # print(np.mean(mfccs_2d, axis=0))
+        # time.sleep(2)
+        #
+        #
+        #
         segment_length = int(len(audio_white_noise) / 40)
         segments = [audio_white_noise[i:i + segment_length] for i in range(0, len(audio_white_noise), segment_length)]
         for segment in segments:
@@ -75,9 +116,8 @@ def load_data(data_path, metadata_path):
             mfccs_wn_scaled = np.reshape(np.mean(mfccs_white_noise.T, axis=0), (1, 40))
             if mfccs_wn_2d.shape[0] < 40:
                 mfccs_wn_2d = np.append(mfccs_wn_2d, mfccs_wn_scaled, axis=0)
-            if temp_means_wn.shape[0] < 40:
-                temp_means_wn = np.append(temp_means_wn, np.mean(mfccs_wn_scaled))
-
+            # if temp_means_wn.shape[0] < 40:
+            #     temp_means_wn = np.append(temp_means_wn, np.mean(mfccs_wn_scaled))
 
         segment_length = int(len(audio_roll) / 40)
         segments = [audio_roll[i:i + segment_length] for i in
@@ -87,10 +127,8 @@ def load_data(data_path, metadata_path):
             mfccs_r_scaled = np.reshape(np.mean(mfccs_roll.T, axis=0), (1, 40))
             if mfccs_r_2d.shape[0] < 40:
                 mfccs_r_2d = np.append(mfccs_r_2d, mfccs_r_scaled, axis=0)
-            if temp_means_r.shape[0] < 40:
-                temp_means_r = np.append(temp_means_r, np.mean(mfccs_r_scaled))
-
-
+            # if temp_means_r.shape[0] < 40:
+            #     temp_means_r = np.append(temp_means_r, np.mean(mfccs_r_scaled))
 
         segment_length = int(len(audio_time_stch) / 40)
         segments = [audio_time_stch[i:i + segment_length] for i in
@@ -100,8 +138,8 @@ def load_data(data_path, metadata_path):
             mfccs_ts_scaled = np.reshape(np.mean(mfccs_ts.T, axis=0), (1, 40))
             if mfccs_ts_2d.shape[0] < 40:
                 mfccs_ts_2d = np.append(mfccs_ts_2d, mfccs_ts_scaled, axis=0)
-            if temp_means_ts.shape[0] < 40:
-                temp_means_ts = np.append(temp_means_ts, np.mean(mfccs_ts_scaled))
+            # if temp_means_ts.shape[0] < 40:
+            #     temp_means_ts = np.append(temp_means_ts, np.mean(mfccs_ts_scaled))
 
         segment_length = int(len(audio_pitch_sf) / 40)
         segments = [audio_pitch_sf[i:i + segment_length] for i in
@@ -111,34 +149,33 @@ def load_data(data_path, metadata_path):
             mfccs_ps_scaled = np.reshape(np.mean(mfccs_ps.T, axis=0), (1, 40))
             if mfccs_ps_2d.shape[0] < 40:
                 mfccs_ps_2d = np.append(mfccs_ps_2d, mfccs_ps_scaled, axis=0)
-            if temp_means_ps.shape[0] < 40:
-                temp_means_ps = np.append(temp_means_ps, np.mean(mfccs_ps_scaled))
-
+            # if temp_means_ps.shape[0] < 40:
+            #     temp_means_ps = np.append(temp_means_ps, np.mean(mfccs_ps_scaled))
 
         features = np.insert(features, np.shape(features)[0], mfccs_2d, axis=0)
         features = np.insert(features, np.shape(features)[0], mfccs_wn_2d, axis=0)
         features = np.insert(features, np.shape(features)[0], mfccs_r_2d, axis=0)
         features = np.insert(features, np.shape(features)[0], mfccs_ts_2d, axis=0)
         features = np.insert(features, np.shape(features)[0], mfccs_ps_2d, axis=0)
-
-
-        mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means, axis=0)
-        mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means_wn, axis=0)
-        mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means_r, axis=0)
-        mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means_ts, axis=0)
-        mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means_ps, axis=0)
-
-        labels.append(row['class'])
-        labels.append(row['class'])
-        labels.append(row['class'])
-        labels.append(row['class'])
-        labels.append(row['class'])
-
-        transformation_labels.append('raw')
-        transformation_labels.append('wn')
-        transformation_labels.append('r')
-        transformation_labels.append('ts')
-        transformation_labels.append('ps')
+        #
+        #
+        # mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means, axis=0)
+        # mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means_wn, axis=0)
+        # mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means_r, axis=0)
+        # mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means_ts, axis=0)
+        # mfcc_means = np.insert(mfcc_means, mfcc_means.shape[0], temp_means_ps, axis=0)
+        #
+        # labels.append(row['class'])
+        # labels.append(row['class'])
+        # labels.append(row['class'])
+        # labels.append(row['class'])
+        # labels.append(row['class'])
+        #
+        # transformation_labels.append('raw')
+        # transformation_labels.append('wn')
+        # transformation_labels.append('r')
+        # transformation_labels.append('ts')
+        # transformation_labels.append('ps')
         # print("\n\nRaw: \tNegative values count: ", np.shape(np.where(temp_means < 0))[1],
         #       "\tMaximum Vale: ", np.max(temp_means), "\tMin Val: ", np.min(temp_means))
         #
@@ -153,23 +190,22 @@ def load_data(data_path, metadata_path):
         #
         # print("\nPitch shift: \tNegative values count: ", np.shape(np.where(temp_means_ps < 0))[1],
         #       "\tMaximum Vale: ", np.max(temp_means_ps), "\tMin Val: ", np.min(temp_means_ps))
-        if len(labels) != features.shape[0]:
-            print(f"Sizes mismatched at {count+1}. Terminated.")
-            return None, None
-        print(f"{count+1} files done.\n")
-
-    labels_encoded = le.transform(labels)
-    labels_onehot = to_categorical(labels_encoded)
-    transformation_labels_encoded = le.fit_transform(transformation_labels)
-    transformation_labels_onehot = to_categorical(transformation_labels_encoded)
-    np.save('Features.npy', features)
-    np.save('Labels.npy', labels_onehot)
-    np.save('MFCC_Means.npy', mfcc_means)
-    pd.Series(transformation_labels).to_csv('Transformation_Labels.csv')
-    np.save('Transformation_Labels_categorical.npy', transformation_labels_encoded)
-    # np.save('Transformation_Labels.npy', transformation_labels)
-    return features, labels_onehot
-
+        #     if len(labels) != features.shape[0]:
+        #         print(f"Sizes mismatched at {count+1}. Terminated.")
+        #         return None, None
+        print(f"{count + 1} files done.\n")
+    #
+    # labels_encoded = le.transform(labels)
+    # labels_onehot = to_categorical(labels_encoded)
+    # transformation_labels_encoded = le.fit_transform(transformation_labels)
+    # transformation_labels_onehot = to_categorical(transformation_labels_encoded)
+    # np.save('Features.npy', features)
+    # np.save('Labels.npy', labels_onehot)
+    # np.save('MFCC_Means.npy', mfcc_means)
+    # pd.Series(transformation_labels).to_csv('Transformation_Labels.csv')
+    # np.save('Transformation_Labels_categorical.npy', transformation_labels_encoded)
+    # # np.save('Transformation_Labels.npy', transformation_labels)
+    return features
 
 
 def load_human_speech_data(data_path, metadata_path, features_array, labels_onehot):
@@ -222,8 +258,8 @@ def load_human_speech_data(data_path, metadata_path, features_array, labels_oneh
 def predict_binary(input, model):
     # pred = model.predict(np.expand_dims(input, axis=0))
     pred = model.predict(input)
-    print('Shape of prediction: ', np.shape(pred))
-    print(np.argmax(pred), ' ', label_names[np.argmax(pred)])
+    # print(np.argmax(pred), ' ', label_names[np.argmax(pred)])
+
     y_pred_binary = np.empty([0, 1])
     prob_good_sum = 0
     prob_bad_sum = 0
@@ -246,7 +282,7 @@ def predict_binary(input, model):
         else:
             y_pred_binary = np.insert(y_pred_binary, y_pred_binary.shape[0], np.array([0]), axis=0)
 
-    return y_pred_binary
+    return y_pred_binary, np.max(pred)
 
 
 def doFinal1():
@@ -339,49 +375,127 @@ def load_labels(data_path, metadata_path):
     np.save('Labels.npy', labels_onehot)
 
 
+class NumpyArrayQueue:
+    def __init__(self):
+        self.queue = deque(maxlen=5)  # change when necessary
+
+    def enqueue(self, numpy_array):
+        # Add a NumPy array to the end of the deque
+        self.queue.append(numpy_array)
+
+    def dequeue(self):
+        # Remove and return the NumPy array from the front of the deque
+        return self.queue.popleft()
+
+    def is_empty(self):
+        # Check if the deque is empty
+        return len(self.queue) == 0
+
+    def get_length(self):
+        return len(self.queue)
+
+    def peek(self, index):
+        # Access the NumPy array at the specified index without dequeuing
+        return self.queue[index]
+
+
+ratio = 1
 def doFinal(model):
+    # Load YAMNet model
+    yamnet_model_handle = 'https://tfhub.dev/google/yamnet/1'
+    reloaded_model = hub.load(yamnet_model_handle)
+    print('YAMNet model loaded.')
+    class_map_path = reloaded_model.class_map_path().numpy().decode('utf-8')
+    class_names = list(pd.read_csv(class_map_path)['display_name'])
+
     FORMAT = pyaudio.paFloat32
     CHANNELS = 1
-    RATE = 22050
+    RATE = 16000
     CHUNK_SIZE = 1024
 
     audio = pyaudio.PyAudio()
 
     stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK_SIZE)
     stream_out = audio.open(format=pyaudio.paFloat32,
-                        channels=1,
-                        rate=RATE,
-                        output=True,
-                        frames_per_buffer=CHUNK_SIZE)
+                            channels=1,
+                            rate=RATE,
+                            output=True,
+                            frames_per_buffer=CHUNK_SIZE)
 
     features = np.empty((1, 40, 40))
+    recent_arrays = NumpyArrayQueue()
     try:
-        print("Recording... (Press Ctrl+C to stop)")
+        print("Recording...")
         i = 0
-        input_array = np.empty((0))
+        input_array = np.empty((1024 * 87), dtype=np.float32)  # change to 1024*80 when needed
         mfccs_2d = np.empty((40, 40))
-        pred_history = [0, 0]
+        pred_history = 0
+        pos = 0
         while True:
+            start_time = datetime.now()
             audio_data = stream.read(CHUNK_SIZE)
+            end_time = datetime.now()
+            difference = end_time - start_time
+            global ratio
+            try:
+                ratio = 1024 / difference.total_seconds()
+            except ZeroDivisionError:
+                print('ZeroDivisionError')
+            start_time = datetime.now()
             numerical_data = np.frombuffer(audio_data, dtype=np.float32)
-            if pred_history[0] == 1 and pred_history[1] == 1:
-            # Invert the audio
-                inverted_audio = -10 * numerical_data
+            max_similarity = -1
+            max_index = []
 
-            # Convert the inverted audio back to bytes
-                inverted_data = inverted_audio.tobytes()
 
-            # Play the inverted audio
-                stream_out.write(inverted_data)
+            if pred_history == 1:  # Meaning that the last sound is bad
+                # Calculate similarity between all subparts of the recent arrays and the input array
+                if recent_arrays.get_length() > 0:
+                    for array in range(recent_arrays.get_length()):
+                        for j in range(87):
+                            similarity = cosine_similarity(np.expand_dims(numerical_data, axis=0),
+                                                           np.expand_dims(recent_arrays.peek(array)[j: j + 1024],
+                                                                          axis=0))[0, 0]
+                            if similarity > max_similarity:
+                                max_index = [array, j]
+
+                    j = max_index[1]
+                try:
+                    end_time = datetime.now()
+                    calc_time = (end_time - start_time).total_seconds()
+                    delay = int(ratio * calc_time)
+                    # Invert the part of the array that follows the part with the maximum similarity
+                    inverted_audio = -1 * recent_arrays.peek(max_index[0])[
+                                          j + delay: j + delay + 1024]  # give the delay here by
+                    # adding something to j
+                    inverted_data = inverted_audio.tobytes()
+                    # Play the inverted audio
+                    stream_out.write(inverted_data)
+                except IndexError:
+                    print('Max similarity sound out of range.')
 
             # print("Mean of input audio: ", np.mean(numerical_data), "\n")
-            if i <= 80:  # Replace with the correct value to make it 0.5 secs
-                input_array = np.concatenate((input_array, numerical_data), axis=0)
+            if i < 87:  # Replace with the correct value to make it 0.5 secs
+                input_array[pos: pos + 1024] = numerical_data
                 i += 1
+                pos += 1024
 
             else:
-                input_array *= 10
-                print("Mean of input audio: ", np.mean(input_array))
+                recent_arrays.enqueue(input_array)
+                # t = np.arange(0, input_array.shape[0])
+                # print("Mean of input audio: ", np.mean(input_array))
+                # print("Standard deviation: ", np.std(input_array))
+                # print("Range: ", np.max(input_array) - np.min(input_array))
+                #
+                # print("Mean of the first 5 segments: ", np.mean(input_array[:1024*5]))
+                # print("Standard deviation of the first 5 segments:", np.std(input_array[:1024*5]))
+                # print("Range of the first 5 segments: ", np.max(input_array[:1024*5]) - np.min(input_array[:1024*5]))
+                # plt.figure(figsize=(14, 5))
+                # plt.plot(t, input_array)
+                # plt.title('Waveform of the Audio Signal')
+                # plt.xlabel('Time (s)')
+                # plt.ylabel('Amplitude')
+                # plt.show()
+
                 low_counter = 0
                 i = 0
                 segment_length = int(len(input_array) / 40)
@@ -389,20 +503,12 @@ def doFinal(model):
 
                 k = 0
                 for segment in segments:
-                    # print(np.mean(segment))
-                    # if low_counter > 30:
-                    #     break
-                    # if np.mean(segment) < 20:
-                    #     low_counter += 1
                     mfccs = librosa.feature.mfcc(y=segment, sr=RATE, n_mfcc=40)
                     mfccs_scaled = np.reshape(np.mean(mfccs.T, axis=0), (1, 40))
                     if k < 40:
                         mfccs_2d[k] = mfccs_scaled
-                    k+=1
-
-                # if low_counter > 30:
-                #     print("Low amplitude sound, hence ignored.")
-                #     continue
+                    k += 1
+                # print("\nMeans of MFCC features of segments:\n", np.mean(mfccs_2d, axis=0))
 
                 try:
                     features[0] = mfccs_2d
@@ -412,16 +518,38 @@ def doFinal(model):
                 finally:
                     features[0] = mfccs_2d
                 # print(features,'\n', features.shape)
-                pred = predict_binary(features, model)
-                if pred[0, 0].item() == 0:
-                    print('prediction: Good\n\n')
-                    pred_history[0], pred_history[1] = pred_history[1], 0
-                else:
+                pred, prob = predict_binary(features, model)
+                global noisy_sounds
+                scores, embeddings, spectrogram = reloaded_model(input_array)
+                class_scores = tf.reduce_mean(scores, axis=0)
+                top_class_yamnet = tf.math.argmax(class_scores)
+                inferred_class_yamnet = class_names[top_class_yamnet]
+                top_score_yamnet = class_scores[top_class_yamnet]
+
+                if inferred_class_yamnet in noisy_sounds:
+                    # If YAMnet says bad and the custom model says good:
+                    # if pred[0, 0].item() == 0:
+                    #     if top_score_yamnet * 521 - prob * 10 > 0:
                     print('prediction: Bad\n\n')
-                    pred_history[0], pred_history[1] = pred_history[1], 1
+                    pred_history = 1
+
+                else:
+                    print('prediction: Good\n\n')
+                    pred_history = 0
+
+                #     else:
+                #         print('prediction: Bad\n\n')
+                #         pred_history = 1
+                #
+                # # If YAMnet says good don't do anything
+                # else:
+                #     print('prediction: Good\n\n')
+                #     pred_history = 0
+
                 features = np.empty((1, 40, 40))
                 mfccs_2d = np.empty((40, 40))
-                input_array = np.empty((0))
+                input_array = np.empty((1024 * 87), dtype=np.float32)  # change to 1024*80 when needed
+                pos = 0
 
 
 
@@ -433,5 +561,3 @@ def doFinal(model):
     stream_out.stop_stream()
     stream_out.close()
     audio.terminate()
-
-
