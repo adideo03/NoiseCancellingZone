@@ -432,12 +432,17 @@ def doFinal(model):
                             if similarity > max_similarity:
                                 max_index = [array, j]
 
-                    j = max_index[1]
+                    j = max_index[1] 
+
+
+              
+                  ################################ The MAIN PART ###################################
                 try:
                     end_time = datetime.now()
                     calc_time = (end_time - start_time).total_seconds()
                     delay = int(ratio * calc_time)
                     # Invert the part of the array that follows the part with the maximum similarity
+                  
                     inverted_audio = -1 * recent_arrays.peek(max_index[0])[
                                           j + delay: j + delay + 1024]  # give the delay here by
                     # inverted_audio = -input_array
@@ -448,6 +453,8 @@ def doFinal(model):
                     # stream_out.write(inverted_data)
                     plot_final(input_array, inverted_audio)
                     # plot_waveform([input_array, inverted_audio], ['Input Audio', 'Inverted Audio'])
+
+              ###############################################################################################
 
 
 
