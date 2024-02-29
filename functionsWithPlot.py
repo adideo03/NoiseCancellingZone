@@ -235,11 +235,11 @@ def doFinal1():
     FORMAT = pyaudio.paFloat32
     CHANNELS = 1
     RATE = 22050
-    CHUNK_SIZE = 1024
+    chunkSize = 1024
 
     audio = pyaudio.PyAudio()
 
-    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK_SIZE)
+    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=chunkSize)
     sample = np.empty((0))
     features = np.empty((0, 40, 40))
     try:
@@ -248,7 +248,7 @@ def doFinal1():
         input_array = np.empty((0))
         mfccs_2d = np.empty((0, 40))
         while True:
-            audio_data = stream.read(CHUNK_SIZE)
+            audio_data = stream.read(chunkSize)
 
             numerical_data = np.frombuffer(audio_data, dtype=np.float32)
 
@@ -358,7 +358,7 @@ def plot_waveform(data_list, title_list):
     plt.show()
 
 
-def plot_final(input, output):
+def plot_final(input, output, i):
     plt.close()
     plt.figure(figsize=(12, 6))
     print("Input: ", input)
@@ -368,36 +368,54 @@ def plot_final(input, output):
     # Plot the second array in red
     plt.plot(np.arange(output.shape[0]), output, color='red')
     plt.legend()
+    plt.savefig(f'plot{i}.png')
     plt.show()
 
 
 ratio = 1
 
 
+def expt_plot(input, closest_array, output):
+    plt.close()
+    plt.figure(figsize=(12, 6))
+    print("Input: ", input)
+    print("Output: ", output)
+    plt.plot(np.arange(input.shape[0]), input, color='blue')
+
+    plt.plot(np.arange(closest_array.shape[0]), closest_array, color='green')
+    # Plot the second array in red
+    plt.plot(np.arange(output.shape[0]), output, color='red')
+    plt.legend()
+    plt.show()
+
+
 def doFinal(model):
     # Load YAMNet model
-    yamnet_model_handle = 'https://tfhub.dev/google/yamnet/1'
-    reloaded_model = hub.load(yamnet_model_handle)
+    yamnet_model_handle = 'https://www.kaggle.com/models/google/yamnet/frameworks/TensorFlow2/variations/yamnet/versions/1'
+    model = hub.load(yamnet_model_handle)
     print('YAMNet model loaded.')
-    class_map_path = reloaded_model.class_map_path().numpy().decode('utf-8')
+    class_map_path = model.class_map_path().numpy().decode('utf-8')
     class_names = list(pd.read_csv(class_map_path)['display_name'])
 
     FORMAT = pyaudio.paFloat32
     CHANNELS = 1
     RATE = 16000
-    CHUNK_SIZE = 1024
+    chunkSize = 1024
 
     audio = pyaudio.PyAudio()
 
-    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK_SIZE)
+    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=chunkSize)
     stream_out = audio.open(format=pyaudio.paFloat32,
                             channels=1,
                             rate=RATE,
                             output=True,
-                            frames_per_buffer=CHUNK_SIZE)
+                            frames_per_buffer=chunkSize)
 
     features = np.empty((1, 40, 40))
     recent_arrays = NumpyArrayQueue()
+    input_queue = [None, None]
+    parent_array_queue = [None, None]
+    inverted_queue = [None, None]
     try:
         print("Recording...")
         i = 0
@@ -406,8 +424,9 @@ def doFinal(model):
         pred_history = 0
         pos = 0
         while True:
+            num_plots = 0
             start_time = datetime.now()
-            audio_data = stream.read(CHUNK_SIZE)
+            audio_data = stream.read(chunkSize)
             end_time = datetime.now()
             difference = end_time - start_time
             global ratio
@@ -420,6 +439,7 @@ def doFinal(model):
             numerical_data = np.frombuffer(audio_data, dtype=np.float32)
             max_similarity = -1
             max_index = []
+            input_queue[0], input_queue[1] = input_queue[1], numerical_data
 
             if pred_history == 1:  # Meaning that the last sound is bad
                 # Calculate similarity between all subparts of the recent arrays and the input array
@@ -432,30 +452,36 @@ def doFinal(model):
                             if similarity > max_similarity:
                                 max_index = [array, j]
 
-                    j = max_index[1] 
-
-
-              
-                  ################################ The MAIN PART ###################################
+                    j = max_index[1]
                 try:
                     end_time = datetime.now()
+
                     calc_time = (end_time - start_time).total_seconds()
+                    ratio = 87 * recent_arrays.get_length() * 1024 / calc_time
                     delay = int(ratio * calc_time)
+                    print('Delay: ', delay)
                     # Invert the part of the array that follows the part with the maximum similarity
-                  
                     inverted_audio = -1 * recent_arrays.peek(max_index[0])[
                                           j + delay: j + delay + 1024]  # give the delay here by
                     # inverted_audio = -input_array
-                    # adding something to j
-                    # print()
-                    inverted_data = inverted_audio.tobytes()
-                    # Play the inverted audio
-                    # stream_out.write(inverted_data)
-                    plot_final(input_array, inverted_audio)
-                    # plot_waveform([input_array, inverted_audio], ['Input Audio', 'Inverted Audio'])
+                    print('Inverted_audio: ', inverted_audio)
 
-              ###############################################################################################
+                    parent_array_queue[0], parent_array_queue[1] = parent_array_queue[1], recent_arrays.peek(
+                        max_index[0])
+                    inverted_queue[0], inverted_queue[1] = inverted_queue[1], inverted_audio
 
+                    # This was to check whch part of the parent array it matched the most but it's not the right way
+
+                    try:
+                        if input_queue[0] is not None:
+                            expt_plot(input_queue[1], -1 * parent_array_queue[0], inverted_queue[0])
+                    except TypeError:
+                        print('Type error')
+                        pass
+                    # plot_final(numerical_data, inverted_audio)
+
+                    # We need to take the inverted audio and maybe also the parent array and plot it with the next input
+                    # How do we determine the delay still?
 
 
                 except IndexError:
@@ -494,7 +520,7 @@ def doFinal(model):
                 # print(features,'\n', features.shape)
                 pred, prob = predict_binary(features, model)
                 global noisy_sounds
-                scores, embeddings, spectrogram = reloaded_model(input_array)
+                scores, embeddings, spectrogram = model(input_array)
                 class_scores = tf.reduce_mean(scores, axis=0)
                 top_class_yamnet = tf.math.argmax(class_scores)
                 inferred_class_yamnet = class_names[top_class_yamnet]
@@ -536,3 +562,257 @@ def doFinal(model):
     # stream_out.stop_stream()
     # stream_out.close()
     # audio.terminate()
+
+
+from annoy import AnnoyIndex
+import numpy as np
+
+
+def initialize_index(dimension):
+    # Specify the number of dimensions for the Annoy index
+    annoy_index = AnnoyIndex(dimension, 'angular')  # Use 'angular' metric for cosine similarity
+    return annoy_index
+
+
+def update_index(annoy_index, new_data_point, max_size, save_interval):
+    # Add the new data to the Annoy index
+    index_position = annoy_index.get_n_items()
+    annoy_index.add_item(index_position, new_data_point.flatten())
+
+    # Check if it's time to manage the index size
+    if index_position % save_interval == 0:
+        # Save the index to a temporary file
+        annoy_index.save('temp_index.ann')
+
+        # Create a new Annoy index and load from the saved file
+        new_annoy_index = AnnoyIndex(annoy_index.f, 'angular')
+        new_annoy_index.load('temp_index.ann')
+
+        # Trim the new index to the desired size
+        # new_annoy_index.build(int(max_size))
+
+        # Update the original index with the new one
+        annoy_index = new_annoy_index
+
+
+import numpy as np
+from annoy import AnnoyIndex
+
+
+def convert_and_trim_index(annoy_index, max_size):
+    # Check if trimming is required
+
+    index_array = np.array([annoy_index.get_item_vector(i) for i in range(annoy_index.get_n_items())])
+    # Trim the array to the desired size
+
+    trimmed_array = index_array[index_array.shape[0] - max_size: ]
+
+    # Create a new Annoy index
+    new_annoy_index = AnnoyIndex(len(trimmed_array[0]), 'angular')
+
+    # Add vectors from the trimmed array to the new index
+    for i, vector in enumerate(trimmed_array):
+        new_annoy_index.add_item(i, vector)
+
+    # Build the new index
+    new_annoy_index.build(int(max_size))
+    return new_annoy_index
+
+
+def print_neighbors_stats(annoy_index, new_data_point, k):
+    # Query for approximate nearest neighbors
+    indices = annoy_index.get_nns_by_vector(vector=new_data_point.flatten(), n=k)
+
+    # Retrieve the data of the neighbor with the highest similarity
+    for neighbor in indices:
+        neighbor_data = annoy_index.get_item_vector(neighbor)
+
+        # Print the mean and std of the retrieved neighbor
+        print("Mean of Retrieved Neighbor:", np.mean(neighbor_data))
+        print("Std of Retrieved Neighbor:", np.std(neighbor_data))
+
+
+# Example continuous update loop
+dimension = 1024  # Adjust based on your data dimensionality
+max_index_size = 1000  # Maximum number of items in the index
+index = initialize_index(dimension)
+
+window_size = 1000  # Adjust the window size as needed
+# for i in range(1000):
+#     # Receive new data
+#     new_data_point = np.random.rand(dimension).astype('float32')
+#     index.add_item(i=i, vector=new_data_point)
+# index.build(100, -1)
+#
+# for i in range(100):
+#     # Receive new data
+#     new_data_point = np.random.rand(1, dimension).astype('float32')
+#     if index.get_n_items() > max_index_size + 80:
+#         index = convert_and_trim_index(index, max_index_size)
+#     # update_index(index, new_data_point, max_index_size, 10)
+#
+# for i in range(10):
+#     new_data_point = np.random.rand(1, dimension).astype('float32')
+#     print('Mean of new data point: ', np.mean(new_data_point), 'Std: ', np.std(new_data_point),'\n\n')
+#
+#     # Print mean and std of neighbors with the highest similarity
+#     print_neighbors_stats(index, new_data_point, k=5)
+#     print('\n\n================================')
+
+
+def doFinalFastSearching():
+    # Load YAMNet model
+    yamnet_model_handle = 'https://tfhub.dev/google/yamnet/1'
+    # yamnet_model_handle = 'https://www.kaggle.com/models/google/yamnet/frameworks/TensorFlow2/variations/yamnet/versions/1'
+    model = hub.load(yamnet_model_handle)
+    # model = tf.saved_model.load('D:/Advay/SY BTech/EDI3 Folder/archive.tar/archive/saved_model.pb/1/')
+    print('YAMNet model loaded.')
+    class_map_path = model.class_map_path().numpy().decode('utf-8')
+    class_names = list(pd.read_csv(class_map_path)['display_name'])
+    
+    # Constants
+    maxNumArrays = 5
+    numChunks = 87
+    format = pyaudio.paFloat32
+    channels = 1
+    rate = 16000
+    chunkSize = 1024
+
+    audio = pyaudio.PyAudio()
+
+    stream = audio.open(format=format, channels=channels, rate=rate, input=True, frames_per_buffer=chunkSize)
+    stream_out = audio.open(format=pyaudio.paFloat32,
+                            channels=1,
+                            rate=rate,
+                            output=True,
+                            frames_per_buffer=chunkSize)
+
+    
+    # Initializations
+    recent_arrays = NumpyArrayQueue()
+    input_queue = [None, None]
+    inverted_queue = [None, None]
+    map = {}
+    annoy_index = AnnoyIndex(1024, 'angular')
+
+    try:
+        print("Recording...")
+        iter = 0
+        i = 0
+        input_array = np.empty((1024 * 87), dtype=np.float32)  # change to 1024*80 when needed
+        pred_history = 1
+        pos = 0
+        while True:
+            start_time = datetime.now()
+            audio_data = stream.read(chunkSize)
+            end_time = datetime.now()
+            difference = end_time - start_time
+            global ratio
+            try:
+                ratio = 1024 / difference.total_seconds()
+            except ZeroDivisionError:
+                # print('ZeroDivisionError')
+                pass
+            start_time = datetime.now()
+            numerical_data = np.frombuffer(audio_data, dtype=np.float32)
+
+            input_queue[0], input_queue[1] = input_queue[1], numerical_data
+
+            if pred_history == 1:  # Meaning that the last sound is bad
+                # Calculate similarity between all subparts of the recent arrays and the input array
+                if annoy_index.get_n_items() > 0:
+                    indices = annoy_index.get_nns_by_vector(vector=numerical_data.flatten(), n=1)
+
+                    # Retrieve the data of the neighbor with the highest similarity
+                    neighbor = indices[0]
+                    neighbor_data = tuple(annoy_index.get_item_vector(neighbor))
+                    print(map[neighbor_data])
+                    parent_array_index, index = map[neighbor_data][0], map[neighbor_data][1]
+                    end_time = datetime.now()
+                    calc_time = (end_time - start_time).total_seconds()
+                    delay = int(ratio * calc_time)
+                    print('parent array index: ', parent_array_index)
+                    print("effective index: ", index+delay)
+
+                    # Get the actual chunk which is to be inverted
+                    try:
+                        output = -1 * recent_arrays.peek(parent_array_index)[index+delay : index+delay+1024]
+                        inverted_queue[0], inverted_queue[1] = inverted_queue[1], output
+
+                        try:
+                            # Plot the result
+                            if inverted_queue[0] is not None:
+                                plot_final(input_queue[1], inverted_queue[0], iter)
+                        except TypeError:
+                            print('Type error')
+
+                    except IndexError:
+                        print("Index Out of range")
+
+            if i < numChunks:  # Replace with the correct value to make it 0.5 secs
+                input_array[pos: pos + 1024] = numerical_data
+                i += 1
+                pos += 1024
+
+            # When the input array is of length numChunks*chunkSize
+            else:
+                recent_arrays.enqueue(input_array)
+                # Update the ANNOY index and map
+                annoy_index = AnnoyIndex(chunkSize, 'angular')
+                for i in range(recent_arrays.get_length()):
+                    array = recent_arrays.peek(i)
+                    for j in range(0, len(array), chunkSize):
+                        subarray = input_array[j:j + chunkSize]
+                        annoy_index.add_item(j+i*numChunks, subarray)
+
+                # Build the new index
+                annoy_index.build(int(recent_arrays.get_length()*numChunks))
+
+                # If the map has less entries than 5 arrays
+                if len(map) == numChunks*maxNumArrays:
+                    map = {key: value for key, value in list(map.items())[numChunks:]}
+                    for key in map.keys():
+                        map[key][0] -= 1
+
+                queue_len = recent_arrays.get_length()
+                for i in range(0, len(input_array), chunkSize):
+                    subarray = input_array[i:i + chunkSize]
+                    map[tuple(subarray)] = [queue_len - 1, i]
+
+                print(map.values())
+
+                # Update the ANNOY Index
+                # if annoy_index.get_n_items() > numChunks*maxNumArrays*chunkSize:
+                #     annoy_index = convert_and_trim_index(annoy_index, numChunks * maxNumArrays * chunkSize)
+
+
+            ################################     Data handling is over     #############################
+
+                global noisy_sounds
+                scores, embeddings, spectrogram = model(input_array)
+                class_scores = tf.reduce_mean(scores, axis=0)
+                top_class_yamnet = tf.math.argmax(class_scores)
+                inferred_class_yamnet = class_names[top_class_yamnet]
+                top_score_yamnet = class_scores[top_class_yamnet]
+
+                if inferred_class_yamnet in noisy_sounds:
+                    print(f'prediction: Bad  {inferred_class_yamnet}\n\n')
+                    pred_history = 1
+
+
+                else:
+                    print(f'prediction: Good  {inferred_class_yamnet}\n\n')
+                    pred_history = 0
+
+                input_array = np.empty((1024 * 87), dtype=np.float32)  # change to 1024*80 when needed
+                pos = 0
+                iter +=1
+
+    except KeyboardInterrupt:
+        print("Recording stopped.")
+
+    stream.stop_stream()
+    stream.close()
+    stream_out.stop_stream()
+    stream_out.close()
+    audio.terminate()
